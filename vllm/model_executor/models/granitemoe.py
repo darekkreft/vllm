@@ -95,13 +95,15 @@ class GraniteMoeMoE(nn.Module):
         self.hidden_size = hidden_size
         self.is_sequence_parallel = is_sequence_parallel
 
-        # Gate stays unquantized. Without a specialized router GEMM
-        # (non-CUDA, or no fp32 kernel), keep the weight in fp32 so the
-        # fallback matmul does not run in bf16.
+        # Gate stays unquantized. Without a specialized router GEMM, store
+        # the weight in fp32. out_dtype makes GateLinear cast the bf16
+        # activation to that dtype before the matmul; HPU aten.mm rejects
+        # mixed BFloat16 and Float operands.
         self.gate = GateLinear(
             hidden_size,
             num_experts,
             params_dtype=params_dtype,
+            out_dtype=torch.float32,
             force_fp32_compute=True,
             prefix=f"{prefix}.gate",
         )
