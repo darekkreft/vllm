@@ -95,11 +95,14 @@ class GraniteMoeMoE(nn.Module):
         self.hidden_size = hidden_size
         self.is_sequence_parallel = is_sequence_parallel
 
-        # Gate always runs at half / full precision for now.
+        # Gate stays unquantized. Without a specialized router GEMM
+        # (non-CUDA, or no fp32 kernel), keep the weight in fp32 so the
+        # fallback matmul does not run in bf16.
         self.gate = GateLinear(
             hidden_size,
             num_experts,
             params_dtype=params_dtype,
+            force_fp32_compute=True,
             prefix=f"{prefix}.gate",
         )
 
