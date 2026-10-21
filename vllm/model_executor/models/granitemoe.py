@@ -46,6 +46,7 @@ from vllm.model_executor.layers.fused_moe import (
 from vllm.model_executor.layers.layernorm import RMSNorm
 from vllm.model_executor.layers.linear import (
     QKVParallelLinear,
+    ReplicatedLinear,
     RowParallelLinear,
 )
 from vllm.model_executor.layers.logits_processor import LogitsProcessor
@@ -58,6 +59,7 @@ from vllm.model_executor.layers.vocab_parallel_embedding import (
 from vllm.model_executor.model_loader.weight_utils import sharded_weight_loader
 from vllm.model_executor.models.utils import sequence_parallel_chunk
 from vllm.model_executor.utils import set_weight_attrs
+from vllm.platforms import current_platform
 from vllm.sequence import IntermediateTensors
 
 from .granite import granite_layer_attn_params
@@ -95,18 +97,30 @@ class GraniteMoeMoE(nn.Module):
         self.hidden_size = hidden_size
         self.is_sequence_parallel = is_sequence_parallel
 
-        # Gate stays unquantized. Without a specialized router GEMM, store
-        # the weight in fp32. out_dtype makes GateLinear cast the bf16
-        # activation to that dtype before the matmul; HPU aten.mm rejects
-        # mixed BFloat16 and Float operands.
-        self.gate = GateLinear(
-            hidden_size,
-            num_experts,
-            params_dtype=params_dtype,
-            out_dtype=torch.float32,
-            force_fp32_compute=True,
-            prefix=f"{prefix}.gate",
-        )
+        # The validated HPU score comes from the bf16 ReplicatedLinear matmul.
+        # GateLinear has no HPU router GEMM; its fp32 fallback is a different
+        # rounding and does not reproduce that score. quant_config stays off
+        # so the router weight is not quantized with the experts.
+        if current_platform.device_type == "hpu":
+            self.gate = ReplicatedLinear(
+                hidden_size,
+                num_experts,
+                bias=False,
+                params_dtype=params_dtype,
+                quant_config=None,
+                prefix=f"{prefix}.gate",
+            )
+        else:
+            # No specialized router GEMM: keep the weight in fp32. out_dtype
+            # casts the activation to that dtype before the matmul.
+            self.gate = GateLinear(
+                hidden_size,
+                num_experts,
+                params_dtype=params_dtype,
+                out_dtype=torch.float32,
+                force_fp32_compute=True,
+                prefix=f"{prefix}.gate",
+            )
 
         self.experts = FusedMoEFactory(
             num_experts=num_experts,
